@@ -1,0 +1,476 @@
+<html><head><base href="https://cdn.toolforge.org/websim/" /></head><body>
+<div class="container">
+  <header>
+    <h1>AIOT Temperature Database</h1>
+    <nav>
+      <ul>
+        <li><a href="#data">Data View</a></li>
+        <li><a href="#search">Search</a></li>
+        <li><a href="#visualization">Visualization</a></li>
+      </ul>
+    </nav>
+  </header>
+
+  <main>
+    <section id="data" class="section-box">
+      <h2>Temperature Data</h2>
+      <div id="toggleContainer">
+        <button id="toggleView" class="btn">Switch to Top 10 Highest Temperatures</button>
+      </div>
+      <div id="dataContainer"></div>
+    </section>
+
+    <section id="search" class="section-box">
+      <h2>Search Database</h2>
+      <div id="searchContainer">
+        <form id="searchForm">
+          <label for="searchType">Search by:</label>
+          <select id="searchType">
+            <option value="id">ID</option>
+            <option value="date">Date</option>
+            <option value="temperature">Temperature</option>
+          </select>
+          <input type="text" id="searchValue" placeholder="Enter search value">
+          <button type="submit" class="btn">Search</button>
+        </form>
+      </div>
+      <div id="searchResult"></div>
+    </section>
+
+    <section id="visualization" class="section-box">
+      <h2>Data Visualization</h2>
+      <div id="visualizationContainer">
+        <div id="chart"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p>&copy; 2023 AIOT Temperature Database. All rights reserved.</p>
+  </footer>
+</div>
+
+<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.6.2/sql-wasm.min.js"></script>
+<script>
+let db;
+let isShowingHighestTemps = false;
+let allData = [];
+let currentHighlight = null;
+let top10HighestTemps = [];
+
+initSqlJs({ locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.6.2/${file}` }).then(function(SQL){
+  db = new SQL.Database();
+  createDatabase();
+  displayFirst10Records();
+  loadAllDataAndVisualize();
+});
+
+function createDatabase() {
+  db.run("CREATE TABLE sensors (id INTEGER PRIMARY KEY, date TEXT, temperature REAL)");
+  
+  let lastTemp = 35; // Starting temperature
+  const stmt = db.prepare("INSERT INTO sensors VALUES (?, ?, ?)");
+  
+  for (let i = 1; i <= 100; i++) {
+    const date = new Date(2023, 0, i);
+    const formattedDate = date.toISOString().split('T')[0];
+    
+    // Generate a temperature that fluctuates but stays within 0-70 range
+    lastTemp += (Math.random() - 0.5) * 5;
+    lastTemp = Math.max(0, Math.min(70, lastTemp));
+    
+    stmt.run([i, formattedDate, lastTemp]);
+  }
+  
+  stmt.free();
+}
+
+function displayFirst10Records() {
+  const result = db.exec("SELECT * FROM sensors LIMIT 10");
+  
+  const table = document.createElement('table');
+  table.innerHTML = `
+    <tr>
+      <th>ID</th>
+      <th>Date</th>
+      <th>Temperature (°C)</th>
+    </tr>
+  `;
+
+  if (result[0] && result[0].values) {
+    result[0].values.forEach(row => {
+      const tableRow = table.insertRow();
+      tableRow.insertCell().textContent = row[0];
+      tableRow.insertCell().textContent = row[1];
+      tableRow.insertCell().textContent = row[2].toFixed(1);
+    });
+  }
+
+  document.getElementById('dataContainer').innerHTML = '<h3>First 10 Records</h3>';
+  document.getElementById('dataContainer').appendChild(table);
+}
+
+function displayTop10HighestTemperatures() {
+  const result = db.exec("SELECT * FROM sensors ORDER BY temperature DESC LIMIT 10");
+  
+  const table = document.createElement('table');
+  table.innerHTML = `
+    <tr>
+      <th>ID</th>
+      <th>Date</th>
+      <th>Temperature (°C)</th>
+    </tr>
+  `;
+
+  top10HighestTemps = [];
+
+  if (result[0] && result[0].values) {
+    result[0].values.forEach(row => {
+      const tableRow = table.insertRow();
+      tableRow.insertCell().textContent = row[0];
+      tableRow.insertCell().textContent = row[1];
+      tableRow.insertCell().textContent = row[2].toFixed(1);
+      
+      top10HighestTemps.push({id: row[0], date: row[1], temperature: row[2]});
+    });
+  }
+
+  document.getElementById('dataContainer').innerHTML = '<h3>Top 10 Highest Temperatures</h3>';
+  document.getElementById('dataContainer').appendChild(table);
+  highlightTop10InChart();
+}
+
+document.getElementById('toggleView').addEventListener('click', function() {
+  isShowingHighestTemps = !isShowingHighestTemps;
+  if (isShowingHighestTemps) {
+    this.textContent = "Switch to First 10 Records";
+    displayTop10HighestTemperatures();
+  } else {
+    this.textContent = "Switch to Top 10 Highest Temperatures";
+    displayFirst10Records();
+    removeTop10Highlight();
+  }
+});
+
+document.getElementById('searchForm').addEventListener('submit', function(e) {
+  e.preventDefault();
+  const searchType = document.getElementById('searchType').value;
+  const searchValue = document.getElementById('searchValue').value;
+  
+  searchDatabase(searchType, searchValue);
+});
+
+function searchDatabase(searchType, searchValue) {
+  let query;
+  if (searchType === 'id') {
+    query = `SELECT * FROM sensors WHERE id = ${parseInt(searchValue)}`;
+  } else if (searchType === 'date') {
+    query = `SELECT * FROM sensors WHERE date = '${searchValue}'`;
+  } else {
+    query = `SELECT * FROM sensors WHERE temperature = ${parseFloat(searchValue)}`;
+  }
+
+  const result = db.exec(query);
+  
+  if (result[0] && result[0].values && result[0].values.length > 0) {
+    const row = result[0].values[0];
+    const searchResult = {id: row[0], date: row[1], temperature: row[2]};
+    displaySearchResult(searchResult);
+    highlightSearchResult(searchResult);
+  } else {
+    displaySearchResult(null);
+    highlightSearchResult(null);
+  }
+
+  if (isShowingHighestTemps) {
+    removeTop10Highlight();
+  }
+}
+
+function displaySearchResult(result) {
+  const resultDiv = document.getElementById('searchResult');
+  if (result) {
+    resultDiv.innerHTML = `
+      <h3>Search Result:</h3>
+      <table>
+        <tr>
+          <th>ID</th>
+          <th>Date</th>
+          <th>Temperature (°C)</th>
+        </tr>
+        <tr>
+          <td>${result.id}</td>
+          <td>${result.date}</td>
+          <td>${result.temperature.toFixed(1)}</td>
+        </tr>
+      </table>
+    `;
+  } else {
+    resultDiv.innerHTML = "<p>No matching record found.</p>";
+  }
+}
+
+function loadAllDataAndVisualize() {
+  const result = db.exec("SELECT * FROM sensors");
+  
+  if (result[0] && result[0].values) {
+    allData = result[0].values.map(row => ({id: row[0], date: row[1], temperature: row[2]}));
+    visualizeData();
+  }
+}
+
+function visualizeData() {
+  const dates = allData.map(item => item.date);
+  const temperatures = allData.map(item => item.temperature);
+
+  const trace = {
+    x: dates,
+    y: temperatures,
+    type: 'scatter',
+    mode: 'lines+markers',
+    name: 'Temperature',
+    line: {color: '#007bbb'}
+  };
+
+  const layout = {
+    title: 'Temperature Over Time',
+    xaxis: {title: 'Date'},
+    yaxis: {title: 'Temperature (°C)'},
+    plot_bgcolor: '#ffffff',
+    paper_bgcolor: '#ffffff'
+  };
+
+  Plotly.newPlot('chart', [trace], layout);
+}
+
+function highlightSearchResult(result) {
+  if (!result) {
+    if (currentHighlight) {
+      Plotly.deleteTraces('chart', 1);
+      currentHighlight = null;
+    }
+    return;
+  }
+
+  const trace = {
+    x: [result.date],
+    y: [result.temperature],
+    type: 'scatter',
+    mode: 'markers',
+    marker: {
+      size: 12,
+      color: '#FFA500',
+      symbol: 'star'
+    },
+    name: 'Search Result'
+  };
+
+  if (currentHighlight) {
+    Plotly.restyle('chart', {
+      x: [trace.x],
+      y: [trace.y]
+    }, 1);
+  } else {
+    Plotly.addTraces('chart', trace);
+  }
+
+  currentHighlight = result;
+
+  const layout = {
+    xaxis: {
+      range: [result.date, result.date],
+      autorange: true
+    },
+    yaxis: {
+      range: [result.temperature, result.temperature],
+      autorange: true
+    }
+  };
+  Plotly.relayout('chart', layout);
+}
+
+function highlightTop10InChart() {
+  const top10Dates = top10HighestTemps.map(item => item.date);
+  const top10Temperatures = top10HighestTemps.map(item => item.temperature);
+
+  const trace = {
+    x: top10Dates,
+    y: top10Temperatures,
+    type: 'scatter',
+    mode: 'markers',
+    marker: {
+      size: 12,
+      color: '#e60012',
+      symbol: 'sun'
+    },
+    name: 'Top 10 Highest Temperatures'
+  };
+
+  Plotly.addTraces('chart', trace);
+}
+
+function removeTop10Highlight() {
+  Plotly.deleteTraces('chart', 1);
+}
+
+</script>
+
+<style>
+body {
+  font-family: 'Noto Sans JP', sans-serif;
+  margin: 0;
+  padding: 0;
+  background-color: #f4f4f4;
+  color: #333;
+}
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+header {
+  background-color: #007bbb;
+  color: white;
+  padding: 20px 0;
+  text-align: center;
+}
+
+h1 {
+  margin: 0;
+  font-size: 2.5em;
+  font-weight: 700;
+}
+
+nav ul {
+  list-style-type: none;
+  padding: 0;
+  margin-top: 20px;
+}
+
+nav ul li {
+  display: inline;
+  margin: 0 15px;
+}
+
+nav ul li a {
+  color: white;
+  text-decoration: none;
+  font-size: 1.1em;
+  font-weight: 500;
+  transition: color 0.3s;
+}
+
+nav ul li a:hover {
+  color: #e60012;
+}
+
+main {
+  margin-top: 40px;
+}
+
+.section-box {
+  background-color: white;
+  padding: 30px;
+  margin-bottom: 30px;
+  border-radius: 10px;
+  box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+}
+
+h2 {
+  color: #007bbb;
+  border-bottom: 2px solid #007bbb;
+  padding-bottom: 10px;
+  font-weight: 600;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 20px;
+}
+
+th, td {
+  border: 1px solid #ddd;
+  padding: 12px;
+  text-align: left;
+}
+
+th {
+  background-color: #007bbb;
+  color: white;
+}
+
+tr:nth-child(even) {
+  background-color: #f8f8f8;
+}
+
+.btn {
+  background-color: #e60012;
+  color: white;
+  border: none;
+  padding: 12px 24px;
+  text-align: center;
+  text-decoration: none;
+  display: inline-block;
+  font-size: 16px;
+  margin: 4px 2px;
+  cursor: pointer;
+  border-radius: 5px;
+  transition: background-color 0.3s;
+}
+
+.btn:hover {
+  background-color: #cc0000;
+}
+
+#searchForm {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 15px;
+  margin-top: 20px;
+}
+
+#searchType, #searchValue {
+  padding: 10px;
+  font-size: 16px;
+  border: 1px solid #ddd;
+  border-radius: 5px;
+}
+
+#chart {
+  width: 100%;
+  height: 500px;
+}
+
+footer {
+  background-color: #007bbb;
+  color: white;
+  text-align: center;
+  padding: 20px 0;
+  margin-top: 40px;
+}
+
+@media (max-width: 768px) {
+  .container {
+    padding: 10px;
+  }
+  
+  nav ul li {
+    display: block;
+    margin: 10px 0;
+  }
+  
+  #searchForm {
+    flex-direction: column;
+  }
+  
+  #searchType, #searchValue, .btn {
+    width: 100%;
+  }
+}
+</style>
+</body></html>
